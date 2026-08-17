@@ -12,40 +12,96 @@ jobs:
 
     steps:
       - name: دریافت پروژه
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: نصب .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: "8.0.x"
 
-      - name: Restore
-        run: dotnet restore AccountingPurchasePro.csproj
-
-      - name: ساخت HesabGara
-        run: >
-          dotnet publish AccountingPurchasePro.csproj
-          -c Release
-          -r win-x64
-          --self-contained true
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:PublishReadyToRun=false
-          -o publish
-
-      - name: بررسی فایل EXE
+      - name: پیدا کردن ZIP پروژه
         shell: pwsh
         run: |
-          $exe = Get-ChildItem "publish\*.exe" | Select-Object -First 1
+          $zip = Get-ChildItem -Path . -Filter "*.zip" -File |
+            Where-Object { $_.Name -like "HesabGara*" } |
+            Select-Object -First 1
+
+          if (-not $zip) {
+            Write-Error "فایل ZIP پروژه پیدا نشد."
+            exit 1
+          }
+
+          Write-Host "ZIP پیدا شد: $($zip.Name)"
+
+          New-Item -ItemType Directory -Force -Path extracted | Out-Null
+
+          Expand-Archive `
+            -Path $zip.FullName `
+            -DestinationPath extracted `
+            -Force
+
+      - name: پیدا کردن فایل پروژه
+        shell: pwsh
+        run: |
+          $project = Get-ChildItem `
+            -Path extracted `
+            -Filter "*.csproj" `
+            -File `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $project) {
+            Write-Error "هیچ فایل csproj داخل پروژه پیدا نشد."
+            exit 1
+          }
+
+          Write-Host "Project found:"
+          Write-Host $project.FullName
+
+          "PROJECT_PATH=$($project.FullName)" >> $env:GITHUB_ENV
+
+      - name: Restore
+        shell: pwsh
+        run: |
+          dotnet restore "$env:PROJECT_PATH"
+
+      - name: ساخت نسخه Windows
+        shell: pwsh
+        run: |
+          dotnet publish "$env:PROJECT_PATH" `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:PublishReadyToRun=false `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -o "$env:GITHUB_WORKSPACE\publish"
+
+      - name: بررسی EXE
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem `
+            "$env:GITHUB_WORKSPACE\publish\*.exe" `
+            -File |
+            Select-Object -First 1
+
           if (-not $exe) {
             Write-Error "EXE ساخته نشد."
             exit 1
           }
-          Write-Host "EXE ساخته شد: $($exe.Name)"
 
-      - name: دریافت EXE
-        uses: actions/upload-artifact@v4
+          Write-Host "================================"
+          Write-Host "HesabGara EXE ساخته شد"
+          Write-Host "نام: $($exe.Name)"
+          Write-Host "حجم: $([math]::Round($exe.Length / 1MB, 2)) MB"
+          Write-Host "================================"
+
+      - name: دریافت فایل EXE
+        uses: actions/upload-artifact@v6
         with:
           name: HesabGara-win-x64
           path: publish/*.exe
           if-no-files-found: error
+          retention-days: 14
