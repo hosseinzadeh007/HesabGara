@@ -1,0 +1,51 @@
+name: Build HesabGara EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: دریافت پروژه
+        uses: actions/checkout@v4
+
+      - name: نصب .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore AccountingPurchasePro.csproj
+
+      - name: ساخت HesabGara
+        run: >
+          dotnet publish AccountingPurchasePro.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:PublishReadyToRun=false
+          -o publish
+
+      - name: بررسی فایل EXE
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "publish\*.exe" | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "EXE ساخته نشد."
+            exit 1
+          }
+          Write-Host "EXE ساخته شد: $($exe.Name)"
+
+      - name: دریافت EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: HesabGara-win-x64
+          path: publish/*.exe
+          if-no-files-found: error
