@@ -17,21 +17,20 @@ jobs:
       - name: نصب .NET 8
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: '8.0.x'
 
-      - name: پیدا کردن ZIP پروژه
+      - name: استخراج پروژه
         shell: pwsh
         run: |
-          $zip = Get-ChildItem -Path . -Filter "*.zip" -File |
-            Where-Object { $_.Name -like "HesabGara*" } |
+          $zip = Get-ChildItem -Path . -Filter "HesabGara*.zip" -File |
             Select-Object -First 1
 
           if (-not $zip) {
-            Write-Error "فایل ZIP پروژه پیدا نشد."
+            Write-Error "فایل HesabGara ZIP پیدا نشد."
             exit 1
           }
 
-          Write-Host "ZIP پیدا شد: $($zip.Name)"
+          Write-Host "ZIP: $($zip.Name)"
 
           New-Item -ItemType Directory -Force -Path extracted | Out-Null
 
@@ -40,7 +39,7 @@ jobs:
             -DestinationPath extracted `
             -Force
 
-      - name: پیدا کردن فایل پروژه
+      - name: پیدا کردن پروژه C#
         shell: pwsh
         run: |
           $project = Get-ChildItem `
@@ -51,23 +50,58 @@ jobs:
             Select-Object -First 1
 
           if (-not $project) {
-            Write-Error "هیچ فایل csproj داخل پروژه پیدا نشد."
+            Write-Error "فایل csproj پیدا نشد."
             exit 1
           }
 
-          Write-Host "Project found:"
+          Write-Host "PROJECT:"
           Write-Host $project.FullName
 
           "PROJECT_PATH=$($project.FullName)" >> $env:GITHUB_ENV
+
+      - name: اصلاح System.IO
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem `
+            -Path extracted `
+            -Filter "*.cs" `
+            -File `
+            -Recurse
+
+          foreach ($file in $files) {
+            $text = Get-Content $file.FullName -Raw
+
+            if (
+              $text -match '\bFile\.' -or
+              $text -match '\bPath\.' -or
+              $text -match '\bDirectory\.'
+            ) {
+              if ($text -notmatch '(?m)^\s*using\s+System\.IO\s*;') {
+                $text = "using System.IO;`r`n" + $text
+                Set-Content `
+                  -Path $file.FullName `
+                  -Value $text `
+                  -Encoding UTF8
+
+                Write-Host "System.IO added: $($file.FullName)"
+              }
+            }
+          }
 
       - name: Restore
         shell: pwsh
         run: |
           dotnet restore "$env:PROJECT_PATH"
 
-      - name: ساخت نسخه Windows
+      - name: ساخت EXE
         shell: pwsh
         run: |
+          Remove-Item `
+            -Path "$env:GITHUB_WORKSPACE\publish" `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+
           dotnet publish "$env:PROJECT_PATH" `
             -c Release `
             -r win-x64 `
@@ -94,11 +128,11 @@ jobs:
 
           Write-Host "================================"
           Write-Host "HesabGara EXE ساخته شد"
-          Write-Host "نام: $($exe.Name)"
-          Write-Host "حجم: $([math]::Round($exe.Length / 1MB, 2)) MB"
+          Write-Host "File: $($exe.Name)"
+          Write-Host "Size: $([math]::Round($exe.Length / 1MB, 2)) MB"
           Write-Host "================================"
 
-      - name: دریافت فایل EXE
+      - name: دریافت EXE
         uses: actions/upload-artifact@v6
         with:
           name: HesabGara-win-x64
