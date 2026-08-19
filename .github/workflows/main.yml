@@ -19,88 +19,112 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: استخراج پروژه
+      - name: نمایش فایل‌های Repository
         shell: pwsh
         run: |
-          $zip = Get-ChildItem -Path . -Filter "HesabGara*.zip" -File |
+          Write-Host "Repository: $env:GITHUB_WORKSPACE"
+          Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -Filter "*.zip" -File -Recurse |
+            Select-Object FullName, Length
+
+      - name: پیدا کردن و استخراج پروژه HesabGara
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -Filter "*.zip" -File -Recurse |
+            Where-Object { $_.Name -like "HesabGara*.zip" } |
+            Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
 
           if (-not $zip) {
-            Write-Error "فایل HesabGara ZIP پیدا نشد."
+            Write-Host "فایل‌های موجود:"
+            Get-ChildItem -Path "$env:GITHUB_WORKSPACE" -File -Recurse |
+              Select-Object FullName
+            Write-Error "فایل ZIP با نام HesabGara پیدا نشد."
             exit 1
           }
 
-          Write-Host "ZIP: $($zip.Name)"
+          Write-Host "ZIP پیدا شد: $($zip.FullName)"
 
-          New-Item -ItemType Directory -Force -Path extracted | Out-Null
+          $extractPath = "$env:GITHUB_WORKSPACE\extracted"
+          Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $extractPath | Out-Null
 
-          Expand-Archive `
-            -Path $zip.FullName `
-            -DestinationPath extracted `
-            -Force
+          Expand-Archive -Path $zip.FullName -DestinationPath $extractPath -Force
 
       - name: پیدا کردن پروژه C#
         shell: pwsh
         run: |
-          $project = Get-ChildItem `
-            -Path extracted `
-            -Filter "*.csproj" `
-            -File `
-            -Recurse |
-            Select-Object -First 1
+          $projects = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\extracted" -Filter "*.csproj" -File -Recurse
 
-          if (-not $project) {
-            Write-Error "فایل csproj پیدا نشد."
+          if (-not $projects) {
+            Write-Error "هیچ فایل csproj پیدا نشد."
             exit 1
           }
 
-          Write-Host "PROJECT:"
-          Write-Host $project.FullName
+          $project = $projects |
+            Where-Object { $_.Name -like "*HesabGara*.csproj" } |
+            Select-Object -First 1
 
+          if (-not $project) {
+            $project = $projects | Select-Object -First 1
+          }
+
+          Write-Host "پروژه انتخاب شد: $($project.FullName)"
           "PROJECT_PATH=$($project.FullName)" >> $env:GITHUB_ENV
 
-      - name: اصلاح System.IO
+      - name: اصلاح using های لازم
         shell: pwsh
         run: |
-          $files = Get-ChildItem `
-            -Path extracted `
-            -Filter "*.cs" `
-            -File `
-            -Recurse
+          $files = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\extracted" -Filter "*.cs" -File -Recurse
 
           foreach ($file in $files) {
-            $text = Get-Content $file.FullName -Raw
+            $text = Get-Content $file.FullName -Raw -Encoding UTF8
+            $original = $text
 
-            if (
-              $text -match '\bFile\.' -or
-              $text -match '\bPath\.' -or
-              $text -match '\bDirectory\.'
-            ) {
+            if (($text -match '\bFile\.') -or ($text -match '\bPath\.') -or ($text -match '\bDirectory\.')) {
               if ($text -notmatch '(?m)^\s*using\s+System\.IO\s*;') {
                 $text = "using System.IO;`r`n" + $text
-                Set-Content `
-                  -Path $file.FullName `
-                  -Value $text `
-                  -Encoding UTF8
-
-                Write-Host "System.IO added: $($file.FullName)"
               }
+            }
+
+            if ($file.Name -eq "PaymentsView.cs" -and
+                (($text -match '\bColor\b') -or ($text -match '\bSolidColorBrush\b') -or ($text -match '\bBrushes\b'))) {
+              if ($text -notmatch '(?m)^\s*using\s+System\.Windows\.Media\s*;') {
+                $text = "using System.Windows.Media;`r`n" + $text
+              }
+            }
+
+            if ($file.Name -eq "ReportsView.cs" -and $text -match '\bBinding\b') {
+              if ($text -notmatch '(?m)^\s*using\s+System\.Windows\.Data\s*;') {
+                $text = "using System.Windows.Data;`r`n" + $text
+              }
+            }
+
+            if ($text -ne $original) {
+              Set-Content $file.FullName -Value $text -Encoding UTF8
+              Write-Host "اصلاح شد: $($file.FullName)"
             }
           }
 
+      - name: پاک کردن bin و obj
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "$env:GITHUB_WORKSPACE\extracted" -Directory -Recurse |
+            Where-Object { $_.Name -in @("bin", "obj") } |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
       - name: Restore
         shell: pwsh
-        run: |
-          dotnet restore "$env:PROJECT_PATH"
+        run: dotnet restore "$env:PROJECT_PATH"
 
-      - name: ساخت EXE
+      - name: Build
+        shell: pwsh
+        run: dotnet build "$env:PROJECT_PATH" -c Release --no-restore
+
+      - name: ساخت EXE مستقل Windows x64
         shell: pwsh
         run: |
-          Remove-Item `
-            -Path "$env:GITHUB_WORKSPACE\publish" `
-            -Recurse `
-            -Force `
-            -ErrorAction SilentlyContinue
+          $publishPath = "$env:GITHUB_WORKSPACE\publish"
+          Remove-Item $publishPath -Recurse -Force -ErrorAction SilentlyContinue
 
           dotnet publish "$env:PROJECT_PATH" `
             -c Release `
@@ -111,28 +135,25 @@ jobs:
             -p:PublishReadyToRun=false `
             -p:DebugType=None `
             -p:DebugSymbols=false `
-            -o "$env:GITHUB_WORKSPACE\publish"
+            -o $publishPath
 
       - name: بررسی EXE
         shell: pwsh
         run: |
-          $exe = Get-ChildItem `
-            "$env:GITHUB_WORKSPACE\publish\*.exe" `
-            -File |
+          $exe = Get-ChildItem -Path "$env:GITHUB_WORKSPACE\publish" -Filter "*.exe" -File |
             Select-Object -First 1
 
           if (-not $exe) {
+            Get-ChildItem -Path "$env:GITHUB_WORKSPACE\publish" -File -Recurse |
+              Select-Object FullName, Length
             Write-Error "EXE ساخته نشد."
             exit 1
           }
 
-          Write-Host "================================"
-          Write-Host "HesabGara EXE ساخته شد"
-          Write-Host "File: $($exe.Name)"
-          Write-Host "Size: $([math]::Round($exe.Length / 1MB, 2)) MB"
-          Write-Host "================================"
+          Write-Host "HesabGara EXE ساخته شد: $($exe.Name)"
+          Write-Host "حجم: $([math]::Round($exe.Length / 1MB, 2)) MB"
 
-      - name: دریافت EXE
+      - name: آپلود EXE
         uses: actions/upload-artifact@v6
         with:
           name: HesabGara-win-x64
